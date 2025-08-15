@@ -1,2 +1,39 @@
-.venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+
+# Streamlit cache
+.streamlit/cache/
+.streamlit/secrets.toml
+
+# VS Code settings
+.vscode/
+.history/
+
+# macOS metadata
+.DS_Store
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Python egg metadata
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
