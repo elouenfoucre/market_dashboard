@@ -54,12 +54,10 @@ PERIODS = {
 period_list = list(PERIODS.keys())
 
 today = pd.Timestamp.today().normalize()
-# Fetch enough history for the longest horizon (+buffer for holidays)
+# Fetch enough history for the longest horizon
 start_all = today - timedelta(days=PERIODS["20Y"] + 30)
 
-# ---------------------------
 # Helpers
-# ---------------------------
 @st.cache_data(show_spinner=False, ttl=900)
 def fetch_close_series(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
     try:
