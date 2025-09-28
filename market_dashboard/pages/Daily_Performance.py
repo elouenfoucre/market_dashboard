@@ -62,19 +62,26 @@ selected_horizon = st.sidebar.selectbox("Select horizon", period_list, index=3) 
 start_all = today - timedelta(days=PERIODS[selected_horizon] + 30)
 
 if selected_horizon in ["10Y", "20Y"]:
-    st.warning("⚠️ Fetching long histories may take longer...")
+    st.warning("⚠️ Fetching long histories may take longer (data resampled to monthly).")
 
 # ---------------------------
 # Helpers
 # ---------------------------
 @st.cache_data(show_spinner=True, ttl=900)
-def fetch_all_tickers(ticker_dict, start, end):
+def fetch_all_tickers(ticker_dict, start, end, resample_long=False):
     """Batch download all tickers in dictionary"""
     flat = [t for group in ticker_dict.values() for t in group.values()]
     df = yf.download(flat, start=start, end=end, progress=False)["Close"]
     if isinstance(df, pd.Series):  # only one ticker
         df = df.to_frame()
-    return df.dropna(how="all")
+
+    df = df.dropna(how="all")
+
+    # Resample to monthly for long horizons
+    if resample_long:
+        df = df.resample("M").last()
+
+    return df
 
 def window_stats(series: pd.Series, days: int):
     """Compute returns, min, max, vol for given horizon (calendar days)."""
@@ -170,7 +177,12 @@ def df_to_html(df: pd.DataFrame, index_name: str = "Asset") -> str:
 # Build and print per-class sections
 # ---------------------------
 skipped_all = []
-df_all = fetch_all_tickers(assets, start_all, today)
+df_all = fetch_all_tickers(
+    assets,
+    start_all,
+    today,
+    resample_long=(selected_horizon in ["10Y", "20Y"])
+)
 
 for class_name, tickers in assets.items():
     st.markdown(f"## {class_name}")
@@ -199,27 +211,4 @@ for class_name, tickers in assets.items():
         one_day_html = color_pct_html(one_day_pct)
 
         row = {
-            "Last Price": last_price,
-            "1D %": one_day_html,
-        }
-
-        # Horizon stats
-        for label, days in PERIODS.items():
-            start_px, last_px, ret_pct, mn, mx, ann_vol_pct = window_stats(s, days)
-            row[f"{label}"] = format_period_cell(ret_pct, mn, last_px, mx, ann_vol_pct)
-
-        rows.append(pd.Series(row, name=asset_name))
-
-    if not rows:
-        st.warning(f"No data available for {class_name}.")
-        continue
-
-    df = pd.DataFrame(rows)
-    st.markdown(df_to_html(df, index_name="Asset"), unsafe_allow_html=True)
-
-    if skipped:
-        skipped_all.extend([f"{class_name}: {a}" for a in skipped])
-
-# Global skipped notice
-if skipped_all:
-    st.warning("No data for: " + ", ".join(skipped_all))
+            "Last
