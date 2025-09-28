@@ -100,8 +100,35 @@ selected_assets = st.sidebar.multiselect(
 # Time period selection
 date_option = st.sidebar.selectbox(
     "Select time period",
-    ["Custom", "Year-to-Date", "Year-over-Year", "Last Month"]
+    ["Custom", "1Y", "3Y", "5Y", "10Y", "20Y", "Year-to-Date", "Last Month"]
 )
+
+today = pd.Timestamp.today().normalize()
+
+if date_option == "1Y":
+    start_date = today - pd.DateOffset(years=1)
+    end_date = today
+elif date_option == "3Y":
+    start_date = today - pd.DateOffset(years=3)
+    end_date = today
+elif date_option == "5Y":
+    start_date = today - pd.DateOffset(years=5)
+    end_date = today
+elif date_option == "10Y":
+    start_date = today - pd.DateOffset(years=10)
+    end_date = today
+elif date_option == "20Y":
+    start_date = today - pd.DateOffset(years=20)
+    end_date = today
+elif date_option == "Year-to-Date":
+    start_date = pd.to_datetime(datetime.date(today.year, 1, 1))
+    end_date = today
+elif date_option == "Last Month":
+    start_date = today - pd.DateOffset(months=1)
+    end_date = today
+else:
+    start_date = st.sidebar.date_input("Start date", pd.to_datetime("2022-01-01"))
+    end_date = st.sidebar.date_input("End date", today)
 
 today = pd.Timestamp.today().normalize()
 
