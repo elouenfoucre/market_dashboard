@@ -24,7 +24,11 @@ YIELD_SERIES = {
     "30Y": "DGS30",
 }
 
-# ===================== Helpers / Loaders =====================
+# ===================== Helpers =====================
+def maybe_resample(df, freq="M", threshold=5000):
+    """Resample to monthly if dataset is very large (for faster charts)."""
+    return df.resample(freq).last() if len(df) > threshold else df
+
 @st.cache_data(show_spinner=False, ttl=6*60*60)
 def load_cpi(start=START, end=END):
     df = pdr.DataReader(CPI_SERIES, "fred", start, end).asfreq("MS")
@@ -34,13 +38,9 @@ def load_cpi(start=START, end=END):
 
 @st.cache_data(show_spinner=False, ttl=6*60*60)
 def load_yields(start=START, end=END):
-    frames = []
-    for label, code in YIELD_SERIES.items():
-        s = pdr.DataReader(code, "fred", start, end)
-        s.rename(columns={code: label}, inplace=True)
-        frames.append(s)
-    df = pd.concat(frames, axis=1).loc[start:end].dropna(how="all")
-    return df
+    df = pdr.DataReader(list(YIELD_SERIES.values()), "fred", start, end)
+    df.rename(columns={v: k for k, v in YIELD_SERIES.items()}, inplace=True)
+    return df.dropna(how="all")
 
 @st.cache_data(show_spinner=False, ttl=6*60*60)
 def load_gdp_yoy(start=START, end=END):
@@ -51,22 +51,23 @@ def load_gdp_yoy(start=START, end=END):
     return gdp_yoy
 
 @st.cache_data(show_spinner=False, ttl=6*60*60)
-def load_prices(ticker: str, start=START, end=END) -> pd.Series:
-    """Adjusted close from Yahoo Finance."""
-    df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
-    return df["Close"].dropna()
+def load_prices_batch(tickers, start=START, end=END):
+    """Batch download adjusted closes from Yahoo Finance."""
+    df = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
+    if isinstance(df, pd.Series):
+        df = df.to_frame()
+    return df.dropna(how="all")
 
 def realized_vol(returns: pd.Series, window: int = 20) -> pd.Series:
     """Annualized realized volatility in % from daily returns."""
     return returns.rolling(window).std() * np.sqrt(252) * 100
 
 # ===================== Load core data =====================
-
 cpi = load_cpi()
 yields = load_yields()
 gdp = load_gdp_yoy()
 
-    # ================= INFLATION SECTION =================
+# ================= INFLATION SECTION =================
 st.header("US Inflation (CPI YoY)")
 latest_cpi = cpi.dropna().iloc[-1]
 latest_date = latest_cpi.name.strftime("%b %Y")
@@ -90,7 +91,7 @@ st.plotly_chart(fig_cpi, use_container_width=True)
 with st.expander("Show CPI data (last 24 months)"):
     st.dataframe(cpi[["CPIAUCSL", "MoM_%", "YoY_%"]].tail(24).round(2))
 
-    # ================= GDP GROWTH SECTION =================
+# ================= GDP GROWTH SECTION =================
 st.header("US GDP Growth (YoY)")
 latest_gdp_val = float(gdp["YoY_%"].dropna().iloc[-1])
 q = gdp.dropna().index[-1]
@@ -109,8 +110,9 @@ st.plotly_chart(fig_gdp, use_container_width=True)
 with st.expander("Show GDP data (last 16 quarters)"):
     st.dataframe(gdp.tail(16).round(2))
 
-    # ================= YIELDS SECTION =================
+# ================= YIELDS SECTION =================
 st.header("US Treasury Yields (2000–2025)")
+yields = maybe_resample(yields)  # compress long history if needed
 latest_yields = yields.dropna().iloc[-1]
 cols = st.columns(len(latest_yields))
 for col, (tenor, value) in zip(cols, latest_yields.items()):
@@ -129,84 +131,18 @@ st.plotly_chart(fig_yields, use_container_width=True)
 with st.expander("Show yield data (last 12 rows)"):
     st.dataframe(yields.tail(12).round(2))
 
-  # ================= VOLATILITY SECTION =================
+# ================= VOLATILITY SECTION =================
 st.header("US Market Volatility — Realized vs Implied")
 
 left, right = st.columns([2, 1])
 with right:
     ticker = st.selectbox("Underlying (realized vol):", ["SPY", "QQQ", "IWM"], index=0)
-    window = st.selectbox("Realized vol window (days):", [20, 60, 120], index=1)  # default 60d
+    window = st.selectbox("Realized vol window (days):", [20, 60, 120], index=1)
 with left:
     st.caption("Realized vol = rolling stdev of daily returns × √252 (annualized, %). "
                "VIX = implied vol from S&P 500 options (30-day horizon).")
 
-  # --- Compute RV series
-prices = load_prices(ticker, START, END)   # should be a Series, but we defend anyway
-if isinstance(prices, pd.DataFrame):       # if somehow multi-col, take the first numeric col
-    prices = prices.select_dtypes(include=[np.number])
-if prices.shape[1] >= 1:
-    prices = prices.iloc[:, 0]
-if prices is None or len(prices) == 0:
-    st.warning(f"No price data for {ticker}.")
-else:
-    rets = prices.pct_change()
-    rv = realized_vol(rets, window).dropna()   # could be Series or DataFrame
-
-    # --- Load VIX series
-vix_series = yf.download("^VIX", start=START, end=END, auto_adjust=True, progress=False)
-if isinstance(vix_series, pd.DataFrame) and "Close" in vix_series.columns:
-    vix_series = vix_series["Close"].dropna()
-
-if rv is None or len(rv) == 0 or vix_series is None or len(vix_series) == 0:
-    st.warning("Not enough data to compute realized vol or load VIX.")
-else:
-    # ✅ Force BOTH into 1-column DataFrames with explicit names
-    rv_col  = f"RV_{ticker}_{window}d"
-    vix_col = "VIX"
-
-if isinstance(rv, pd.DataFrame):
-    # if multi-col (shouldn't be), take the first numeric col
-    rv = rv.select_dtypes(include=[np.number])
-    rv_df = rv.iloc[:, [0]].copy()
-    rv_df.columns = [rv_col]
-else:
-    # Series -> DataFrame
-    rv_df = rv.to_frame(name=rv_col)
-
-if isinstance(vix_series, pd.DataFrame):
-    vix_df = vix_series.iloc[:, [0]].copy()
-    vix_df.columns = [vix_col]
-else:
-    vix_df = vix_series.to_frame(name=vix_col)
-
-    # Align on common dates
-df_vol = rv_df.join(vix_df, how="inner").dropna()
-
-if df_vol.empty:
-    st.warning("No overlapping dates between RV and VIX after alignment.")
-else:
-    # Latest metrics
-    latest_rv  = float(df_vol[rv_col].iloc[-1])
-    latest_vix = float(df_vol[vix_col].iloc[-1])
-    m1, m2 = st.columns(2)
-    m1.metric(f"{ticker} Realized Vol ({window}d)", f"{latest_rv:.2f}%")
-    m2.metric("VIX (latest close)", f"{latest_vix:.2f}")
-
-    # Plot
-fig_vol = go.Figure()
-fig_vol.add_trace(go.Scatter(x=df_vol.index, y=df_vol[rv_col],
-                mode="lines", name=rv_col))
-fig_vol.add_trace(go.Scatter(x=df_vol.index, y=df_vol[vix_col],
-                mode="lines", name="VIX (Implied, %)"))
-fig_vol.update_layout(
-        title="Realized vs Implied Volatility",
-        xaxis_title="Date",
-        yaxis_title="Volatility (%)",
-        hovermode="x unified",
-        height=460,
-        margin=dict(l=40, r=20, t=30, b=40),
-    )
-st.plotly_chart(fig_vol, use_container_width=True)
-
-with st.expander("Show volatility data (last 12 rows)"):
-                st.dataframe(df_vol.tail(12).round(2))
+# --- Load RV + VIX in one go
+prices_df = load_prices_batch([ticker, "^VIX"], START, END)
+if ticker not in prices_df.columns or "^VIX" not in prices_df.columns:
+    st.w
