@@ -54,26 +54,30 @@ PERIODS = {
 period_list = list(PERIODS.keys())
 
 today = pd.Timestamp.today().normalize()
-# Fetch enough history for the longest horizon
-start_all = today - timedelta(days=PERIODS["20Y"] + 30)
 
+# ---------------------------
+# Sidebar horizon selector
+# ---------------------------
+selected_horizon = st.sidebar.selectbox("Select horizon", period_list, index=3)  # default = 1Y
+start_all = today - timedelta(days=PERIODS[selected_horizon] + 30)
+
+if selected_horizon in ["10Y", "20Y"]:
+    st.warning("⚠️ Fetching long histories may take longer...")
+
+# ---------------------------
 # Helpers
-@st.cache_data(show_spinner=False, ttl=900)
-def fetch_close_series(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
-    try:
-        df = yf.download(ticker, start=start, end=end, progress=False)
-        if "Close" in df.columns:
-            return df["Close"].dropna().sort_index()
-    except Exception:
-        pass
-    return pd.Series(dtype=float)
+# ---------------------------
+@st.cache_data(show_spinner=True, ttl=900)
+def fetch_all_tickers(ticker_dict, start, end):
+    """Batch download all tickers in dictionary"""
+    flat = [t for group in ticker_dict.values() for t in group.values()]
+    df = yf.download(flat, start=start, end=end, progress=False)["Close"]
+    if isinstance(df, pd.Series):  # only one ticker
+        df = df.to_frame()
+    return df.dropna(how="all")
 
 def window_stats(series: pd.Series, days: int):
-    """
-    Return (start, last, ret_pct, min, max, ann_vol_pct) over the last `days` calendar days.
-    - ret_pct: simple % change from start to last
-    - ann_vol_pct: annualized volatility (std of daily returns * sqrt(252) * 100)
-    """
+    """Compute returns, min, max, vol for given horizon (calendar days)."""
     if series.empty:
         return (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
     win = series.loc[series.index >= (today - timedelta(days=days))]
@@ -87,7 +91,6 @@ def window_stats(series: pd.Series, days: int):
     mn    = float(win.min())
     mx    = float(win.max())
 
-    # daily simple returns for realized vol
     rets = win.pct_change().dropna()
     ann_vol = float(rets.std() * np.sqrt(252) * 100) if not rets.empty else np.nan
 
@@ -115,7 +118,7 @@ def color_pct_html(pct: float) -> str:
     return f"<span style='color:{color}; font-weight:600'>{pct:+.2f}%</span>"
 
 def format_period_cell(ret_pct: float, min_px: float, last_px: float, max_px: float, ann_vol_pct: float) -> str:
-    """HTML cell with three lines: colored % (top), segment (middle), annualized vol (bottom)."""
+    """HTML cell with three lines: % return, segment, annualized vol."""
     if any(np.isnan(x) for x in [min_px, last_px, max_px]):
         return "<div>N/A</div>"
     seg = segment(min_px, last_px, max_px, width=18)
@@ -123,13 +126,13 @@ def format_period_cell(ret_pct: float, min_px: float, last_px: float, max_px: fl
     return (
         f"<div>"
         f"{color_pct_html(ret_pct)}<br>"
-        f"<span style='font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;'>{seg}</span><br>"
+        f"<span style='font-family: monospace;'>{seg}</span><br>"
         f"<span style='color:#555'>Vol (ann): {vol_text}</span>"
         f"</div>"
     )
 
 def df_to_html(df: pd.DataFrame, index_name: str = "Asset") -> str:
-    """Render a small HTML table with rich cells (colored 1D %, period cells)."""
+    """Render as HTML table with custom styling."""
     css = """
     <style>
       table.minmax { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
@@ -167,6 +170,7 @@ def df_to_html(df: pd.DataFrame, index_name: str = "Asset") -> str:
 # Build and print per-class sections
 # ---------------------------
 skipped_all = []
+df_all = fetch_all_tickers(assets, start_all, today)
 
 for class_name, tickers in assets.items():
     st.markdown(f"## {class_name}")
@@ -175,14 +179,18 @@ for class_name, tickers in assets.items():
     skipped = []
 
     for asset_name, ticker in tickers.items():
-        s = fetch_close_series(ticker, start_all, today)
+        if ticker not in df_all.columns:  # missing data
+            skipped.append(asset_name)
+            continue
+
+        s = df_all[ticker].dropna()
         if s.empty:
             skipped.append(asset_name)
             continue
 
         last_price = float(s.iloc[-1])
 
-        # 1D % (most recent close vs prior trading day), colored HTML
+        # 1D %
         one_day_pct = np.nan
         if len(s) >= 2:
             prev_price = float(s.iloc[-2])
@@ -192,10 +200,10 @@ for class_name, tickers in assets.items():
 
         row = {
             "Last Price": last_price,
-            "1D %": one_day_html,  # colored & bold
+            "1D %": one_day_html,
         }
 
-        # For each horizon, compute stats and build the 3-line HTML cell (ret, segment, vol)
+        # Horizon stats
         for label, days in PERIODS.items():
             start_px, last_px, ret_pct, mn, mx, ann_vol_pct = window_stats(s, days)
             row[f"{label}"] = format_period_cell(ret_pct, mn, last_px, mx, ann_vol_pct)
@@ -207,8 +215,6 @@ for class_name, tickers in assets.items():
         continue
 
     df = pd.DataFrame(rows)
-
-    # Render as HTML (multi-line period cells + colored 1D %)
     st.markdown(df_to_html(df, index_name="Asset"), unsafe_allow_html=True)
 
     if skipped:
